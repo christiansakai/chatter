@@ -1,0 +1,3 @@
+# Chatter
+
+Simple chat application
