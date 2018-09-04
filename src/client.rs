@@ -1,8 +1,11 @@
-use std::net::TcpStream;
+extern crate serde_json;
+
+use std::net::{SocketAddr, TcpStream};
 use std::thread;
 use std::sync::mpsc::{self, Sender, Receiver};
 use std::io::{Error, ErrorKind, Read, Write};
 
+use message::{Message};
 use util;
 
 pub struct Client {
@@ -64,8 +67,11 @@ impl Client {
         let mut buffer = vec![0; message_size]; 
         
         if let Ok(_) = socket.read_exact(&mut buffer) {
+            let buffer = util::trim_empty_buffer(buffer);
             let message = String::from_utf8(buffer).unwrap();
-            println!("{}", message);
+            let message_struct: Message = serde_json::from_str(&message).unwrap();
+
+            println!("{}: {}", message_struct.from, message_struct.content);
         };
     }
 }

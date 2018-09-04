@@ -48,13 +48,12 @@ impl Server {
         if let Ok((mut socket, address)) = server.accept() {
             println!("Client {} connected", address);
 
-            let tx = tx.clone();
-            let client = socket.try_clone().unwrap();
-            let client = ClientHandle {
+            clients.push(ClientHandle {
                 address,
-                socket: client,
-            };
-            clients.push(client);
+                socket: socket.try_clone().unwrap(),
+            });
+
+            let tx = tx.clone();
 
             thread::spawn(move || loop {
                 // Non zero buffer size is needed to prevent continuous
@@ -62,23 +61,24 @@ impl Server {
                 let mut buffer = vec![0; message_size]; 
                 match socket.read_exact(&mut buffer) {
                     Ok(_) => {
-                        let buffer = Server::trim_empty_buffer(buffer);
-                        let message = String::from_utf8(buffer).unwrap();
+                        let buffer = util::trim_empty_buffer(buffer);
+                        let message_string = String::from_utf8(buffer).unwrap();
 
-                        let msg = Message {
-                            address: address,
-                            content: message.clone(),
+                        println!("Client {} says: {}", &address, &message_string);
+
+                        let message_struct = Message {
+                            from: address,
+                            content: message_string,
                         };
 
-                        let msgg = serde_json::to_string(&msg).unwrap();
-                        println!("Client {} says: {}", address, message);
+                        let message = serde_json::to_string(&message_struct).unwrap();
 
-                        tx.send(msgg).unwrap();
+                        tx.send(message).unwrap();
                     },
-                    Err(ref err) if err.kind() == ErrorKind::WouldBlock => {
-                        // Caused by no message from the client
-                        ()
-                    },
+
+                    // Caused by no message from the client
+                    Err(ref err) if err.kind() == ErrorKind::WouldBlock => (),
+
                     Err(_) => {
                         println!("Client {} disconnected", address);
                         break;
@@ -90,31 +90,23 @@ impl Server {
         }
     }
 
-    fn trim_empty_buffer(buffer: Vec<u8>) -> Vec<u8> {
-        buffer
-            .into_iter()
-            .take_while(|&x| x != 0)
-            .collect()
-    }
-
     fn broadcast_message(clients: Vec<ClientHandle>, rx: &Receiver<String>, message_size: usize) -> Vec<ClientHandle> {
         if let Ok(message) = rx.try_recv() {
-            let msg: Message = serde_json::from_str(&message).unwrap();
+            let message_struct: Message = serde_json::from_str(&message).unwrap();
 
             return clients
                 .into_iter()
-                // .filter(|ref client_handle| client_handle.address != msg.address)
                 .filter_map(|mut client_handle| {
-                    let mut buffer = message.clone().into_bytes();
-                    // Without matching buffer size the server
-                    // will fail to `read_exact`
-                    buffer.resize(message_size, 0);
+                    if client_handle.address != message_struct.from {
+                        let mut buffer = message.clone().into_bytes();
+                        // Without matching buffer size the server
+                        // will fail to `read_exact`
+                        buffer.resize(message_size, 0);
 
-                    // If sending message to a client failed,
-                    // remove it because the client has disconnected
-                    // TODO: Maybe the removal of client should be in the thread
-                    // above
-                    if client_handle.address != msg.address {
+                        // If sending message to a client failed,
+                        // remove it because the client has disconnected
+                        // TODO: Maybe the removal of client should be in the thread
+                        // above
                         client_handle.socket
                             .write_all(&buffer)
                             .map(|_| client_handle)

@@ -31,3 +31,11 @@ pub fn get_user_input() -> Input {
 
     Input::Message(message)
 }
+
+pub fn trim_empty_buffer(buffer: Vec<u8>) -> Vec<u8> {
+    buffer
+        .into_iter()
+        .take_while(|&x| x != 0)
+        .collect()
+}
+
