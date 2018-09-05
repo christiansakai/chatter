@@ -9,8 +9,10 @@ use message::{Message};
 use util;
 
 pub struct Server {
-    address: String,
+    address: SocketAddr,
     message_size: usize,
+    server: TcpListener,
+    client_handles: Vec<ClientHandle>,
 }
 
 struct ClientHandle {
@@ -20,58 +22,61 @@ struct ClientHandle {
 
 impl Server {
     pub fn new(address: &str, message_size: usize) -> Server {
+        let address = address.parse().unwrap();
+        let server = TcpListener::bind(address).unwrap();
+        // Prevent blocking when reading from the socket
+        server.set_nonblocking(true).unwrap();
+
+        let client_handles = Vec::new();
+
         Server {
-            address: address.to_string(),
+            address,
             message_size,
+            server,
+            client_handles,
         }
     }
 
     pub fn listen(&mut self) {
-        let server = TcpListener::bind(&self.address).unwrap();
-
-        // Prevent blocking when reading from the socket
-        server.set_nonblocking(true).unwrap();
-
-        let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-
-        let mut clients: Vec<ClientHandle> = Vec::new();
+        let (tx, rx): (Sender<Message>, Receiver<Message>) = mpsc::channel();
 
         loop {
-            Server::handle_connections(&mut clients, &server, &tx, self.message_size);
-            clients = Server::broadcast_message(clients, &rx, self.message_size);
+            self.handle_connection(tx.clone());
+            self.broadcast_message(&rx);
 
             util::sleep();
         }
     }
 
-    fn handle_connections(clients: &mut Vec<ClientHandle>, server: &TcpListener, tx: &Sender<String>, message_size: usize) {
-        if let Ok((mut socket, address)) = server.accept() {
+    fn handle_connection(&mut self, tx: Sender<Message>) {
+        if let Ok((mut socket, address)) = self.server.accept() {
             println!("Client {} connected", address);
 
-            clients.push(ClientHandle {
+            let client_socket = socket.try_clone().unwrap();
+
+            self.client_handles.push(ClientHandle {
                 address,
-                socket: socket.try_clone().unwrap(),
+                socket: client_socket,
             });
 
-            let tx = tx.clone();
+            let message_size = self.message_size;
 
             thread::spawn(move || loop {
                 // Non zero buffer size is needed to prevent continuous
                 // 0 reading from the socket.
                 let mut buffer = vec![0; message_size]; 
+
                 match socket.read_exact(&mut buffer) {
                     Ok(_) => {
                         let buffer = util::trim_empty_buffer(buffer);
-                        let message_string = String::from_utf8(buffer).unwrap();
+                        let msg_from_client = String::from_utf8(buffer).unwrap();
 
-                        println!("Client {} says: {}", &address, &message_string);
+                        println!("Client {} says: {}", &address, &msg_from_client);
 
-                        let message_struct = Message {
+                        let message = Message {
                             from: address,
-                            content: message_string,
+                            content: msg_from_client,
                         };
-
-                        let message = serde_json::to_string(&message_struct).unwrap();
 
                         tx.send(message).unwrap();
                     },
@@ -90,34 +95,31 @@ impl Server {
         }
     }
 
-    fn broadcast_message(clients: Vec<ClientHandle>, rx: &Receiver<String>, message_size: usize) -> Vec<ClientHandle> {
+    fn broadcast_message(&mut self, rx: &Receiver<Message>) {
         if let Ok(message) = rx.try_recv() {
-            let message_struct: Message = serde_json::from_str(&message).unwrap();
+            let mut found_disconnected_client = false;
+            let mut disconnected_client_index = 0;
 
-            return clients
-                .into_iter()
-                .filter_map(|mut client_handle| {
-                    if client_handle.address != message_struct.from {
-                        let mut buffer = message.clone().into_bytes();
-                        // Without matching buffer size the server
-                        // will fail to `read_exact`
-                        buffer.resize(message_size, 0);
+            for (index, client_handle) in self.client_handles.iter_mut().enumerate() {
+                if client_handle.address != message.from {
+                    let message_serialized = serde_json::to_string(&message).unwrap();
+                    let mut buffer = message_serialized.into_bytes();
+                    // Without matching buffer size the server
+                    // will fail to `read_exact`
+                    buffer.resize(self.message_size, 0);
 
-                        // If sending message to a client failed,
-                        // remove it because the client has disconnected
-                        // TODO: Maybe the removal of client should be in the thread
-                        // above
-                        client_handle.socket
-                            .write_all(&buffer)
-                            .map(|_| client_handle)
-                            .ok()
-                    } else {
-                        Some(client_handle)
+                    // If sending message to a client failed,
+                    // remove it because the client has disconnected
+                    if let Err(_) = client_handle.socket.write_all(&buffer) {
+                        found_disconnected_client = true;
+                        disconnected_client_index = index;
                     }
-                })
-                .collect();
-        };
+                }
+            }
 
-        clients
+            if found_disconnected_client {
+                self.client_handles.remove(disconnected_client_index);
+            }
+        }
     }
 }
