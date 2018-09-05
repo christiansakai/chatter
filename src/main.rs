@@ -36,7 +36,10 @@ fn main() {
 
         loop {
             match util::get_user_input() {
-                Input::Message(message) => client.send(&message),
+                Input::Message(message) => {
+                    println!("{}: {}", ADDRESS, message);
+                    client.send(&message);
+                }
                 Input::Quit => break,
             }
         }

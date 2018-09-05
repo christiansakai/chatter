@@ -60,12 +60,10 @@ impl Server {
             });
 
             let message_size = self.message_size;
-
             thread::spawn(move || loop {
                 // Non zero buffer size is needed to prevent continuous
                 // 0 reading from the socket.
                 let mut buffer = vec![0; message_size]; 
-
                 match socket.read_exact(&mut buffer) {
                     Ok(_) => {
                         let buffer = util::trim_empty_buffer(buffer);

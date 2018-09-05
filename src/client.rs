@@ -10,16 +10,19 @@ use util;
 
 pub struct Client {
     name: String,
-    address: String,
+    address: SocketAddr,
     message_size: usize,
-    sender: Option<Sender<String>>,
+    sender: Option<Sender<Message>>,
 }
 
 impl Client {
     pub fn new(name: &str, address: &str, message_size: usize) -> Client {
+        let name = name.to_string();
+        let address = address.parse().unwrap();
+
         Client {
-            name: name.to_string(),
-            address: address.to_string(),
+            name,
+            address,
             message_size,
             sender: None,
         }
@@ -27,32 +30,35 @@ impl Client {
 
     pub fn connect(&mut self) {
         let mut socket = TcpStream::connect(&self.address).unwrap();
-
         // Prevent blocking when reading from the socket
         socket.set_nonblocking(true).unwrap();
 
-        let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-        let message_size = self.message_size;
+        let (tx, rx): (Sender<Message>, Receiver<Message>) = mpsc::channel();
+        self.sender = Some(tx);
 
+        let message_size = self.message_size;
         thread::spawn(move || loop {
-            Client::handle_outbound(&mut socket, &rx, message_size);
-            Client::handle_inbound(&mut socket, message_size);
+            Self::handle_outbound(&mut socket, &rx, message_size);
+            Self::handle_inbound(&mut socket, message_size);
 
             util::sleep();
         });
-
-        self.sender = Some(tx);
     }
 
     pub fn send(&self, message: &str) {
         if let Some(ref tx) = self.sender {
-            tx.send(message.to_string()).unwrap();
+            let message = Message {
+                from: self.address,
+                content: message.to_string(),
+            };
+
+            tx.send(message).unwrap();
         }
     }
 
-    fn handle_outbound(socket: &mut TcpStream, rx: &Receiver<String>, message_size: usize) {
+    fn handle_outbound(socket: &mut TcpStream, rx: &Receiver<Message>, message_size: usize) {
         if let Ok(message) = rx.try_recv() {
-            let mut buffer = message.into_bytes();
+            let mut buffer = message.content.into_bytes();
 
             // Without matching buffer size the server
             // will fail to `read_exact`
